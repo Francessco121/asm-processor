@@ -930,7 +930,7 @@ def parse_source(f, opt, framepointer, mips1, input_enc, output_enc, out_depende
 
     return asm_functions
 
-def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, drop_mdebug_gptab):
+def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, drop_mdebug_gptab, sort_text_relocs):
     SECTIONS = ['.data', '.text', '.rodata', '.bss']
 
     with open(objfile_name, 'rb') as f:
@@ -1251,21 +1251,26 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
                     rel.sym_index = asm_objfile.symtab.symbol_entries[rel.sym_index].new_index
                     if sectype == '.rodata' and rel.r_offset in moved_late_rodata:
                         rel.r_offset = moved_late_rodata[rel.r_offset]
-                new_data = b''.join(rel.to_bin() for rel in reltab.relocations)
                 if reltab.sh_type == SHT_REL:
                     if not target_reltab:
                         target_reltab = objfile.add_section('.rel' + sectype,
                                 sh_type=SHT_REL, sh_flags=0,
                                 sh_link=objfile.symtab.index, sh_info=target.index,
                                 sh_addralign=4, sh_entsize=8, data=b'')
-                    target_reltab.data += new_data
+                    target_reltab.relocations.extend(reltab.relocations)
+                    if sort_text_relocs and sectype == ".text":
+                        sort_text_relocations_by_function(target_reltab, objfile.symtab)
+                    target_reltab.data = b''.join(rel.to_bin() for rel in target_reltab.relocations)
                 else:
                     if not target_reltaba:
                         target_reltaba = objfile.add_section('.rela' + sectype,
                                 sh_type=SHT_RELA, sh_flags=0,
                                 sh_link=objfile.symtab.index, sh_info=target.index,
                                 sh_addralign=4, sh_entsize=12, data=b'')
-                    target_reltaba.data += new_data
+                    target_reltaba.relocations.extend(reltab.relocations)
+                    if sort_text_relocs and sectype == ".text":
+                        sort_text_relocations_by_function(target_reltaba, objfile.symtab)
+                    target_reltaba.data = b''.join(rel.to_bin() for rel in target_reltaba.relocations)
 
         objfile.write(objfile_name)
     finally:
@@ -1276,6 +1281,37 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
         except:
             pass
 
+def sort_text_relocations_by_function(reltab: Section, symtab: Section):
+    # The goal here is to sort .text relocations in the order they would have been in if
+    # the code was compiled/assembled as a normal file. Normally, when fixing up the 
+    # resulting object file, relocations from asm would be appended to those generated
+    # from C. This effectively stitches in relocations from asm into the location of the 
+    # C code that they were GLOBAL_ASM'd at, while preserving the order of relocations
+    # within each function. 
+    relocations_by_func: "list[tuple[int, list[Relocation]]]" = []
+    
+    # Get address of each function (in order)
+    for sym in symtab.symbol_entries:
+        if sym.type == STT_FUNC and sym.st_shndx != SHN_UNDEF:
+            relocations_by_func.append((sym.st_value, []))
+    
+    # Group relocations by the function they are in
+    for reloc in reltab.relocations:
+        in_func: "tuple[int, list[Relocation]] | None" = None
+        for func in relocations_by_func:
+            if reloc.r_offset >= func[0]:
+                in_func = func
+            else:
+                break
+        assert in_func is not None
+        in_func[1].append(reloc)
+    
+    # Re-add relocations ordered by group (but maintaining original order within each group)
+    reltab.relocations = []
+    for func in relocations_by_func:
+        for reloc in func[1]:
+            reltab.relocations.append(reloc)
+
 def run_wrapped(argv, outfile, functions):
     parser = argparse.ArgumentParser(description="Pre-process .c files and post-process .o files to enable embedding assembly into C.")
     parser.add_argument('filename', help="path to .c code")
@@ -1285,6 +1321,7 @@ def run_wrapped(argv, outfile, functions):
     parser.add_argument('--input-enc', default='latin1', help="input encoding (default: %(default)s)")
     parser.add_argument('--output-enc', default='latin1', help="output encoding (default: %(default)s)")
     parser.add_argument('--drop-mdebug-gptab', dest='drop_mdebug_gptab', action='store_true', help="drop mdebug and gptab sections")
+    parser.add_argument('--sort-text-relocs', dest='sort_text_relocs', action='store_true', help="sort .text relocations by function")
     parser.add_argument('-framepointer', dest='framepointer', action='store_true')
     parser.add_argument('-mips1', dest='mips1', action='store_true')
     parser.add_argument('-g3', dest='g3', action='store_true')
@@ -1319,7 +1356,7 @@ def run_wrapped(argv, outfile, functions):
         if args.asm_prelude:
             with open(args.asm_prelude, 'rb') as f:
                 asm_prelude = f.read()
-        fixup_objfile(args.objfile, functions, asm_prelude, args.assembler, args.output_enc, args.drop_mdebug_gptab)
+        fixup_objfile(args.objfile, functions, asm_prelude, args.assembler, args.output_enc, args.drop_mdebug_gptab, args.sort_text_relocs)
 
 def run(argv, outfile=sys.stdout.buffer, functions=None):
     try:
