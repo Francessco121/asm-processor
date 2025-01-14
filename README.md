@@ -42,6 +42,8 @@ This functionality may be removed if not needed.
 
 Reading assembly from file is also supported, by either `GLOBAL_ASM("file.s")` or `#pragma GLOBAL_ASM("file.s")`.
 
+For compatibility with common GCC macros, `INCLUDE_ASM("folder", functionname);` and `INCLUDE_RODATA("folder", functionname);` are also allowed, and equivalent to `GLOBAL_ASM("folder/functionname.s")`.
+
 ### What is supported?
 
 `.text`, `.data`, `.bss` and `.rodata` sections, `.word`/`.incbin`, `.ascii`/`.asciz`, and `-g`, `-g3`, `-O1`, `-O2`, `-framepointer` and `-mips1`/`-mips2` flags to the IDO compiler.
@@ -94,3 +96,19 @@ how to avoid reordering the injected assembly, and how .rodata/.late_rodata are 
 ### Testing
 
 There are a few tests to ensure you don't break anything when hacking on asm-processor: `./run-tests.sh` should exit without output if they pass, or else output a diff from previous to new version.
+
+Tests need the environment variable `MIPS_CC` set to point to the IDO 7.1 compiler, with Pascal support enabled.
+
+For example if asm-processor is cloned in the same directory as [ido static recomp](https://github.com/decompals/ido-static-recomp) and the working directory is asm-processor, tests can be run using:
+
+```sh
+MIPS_CC=../ido-static-recomp/build/7.1/out/cc ./run-tests.sh
+```
+
+Or using [qemu-irix](https://github.com/zeldaret/oot/releases/tag/0.1q) (don't forget `chmod u+x qemu-irix`) to emulate IDO:
+
+```sh
+MIPS_CC='./qemu-irix -silent -L ../ido-static-recomp/ido/7.1/ ../ido-static-recomp/ido/7.1/usr/bin/cc' ./run-tests.sh
+```
+
+To skip running Pascal tests, remove the `tests/*.p` glob from `run-tests.sh`.
